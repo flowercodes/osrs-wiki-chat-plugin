@@ -44,7 +44,6 @@ import net.runelite.client.ui.ColorScheme;
 import net.runelite.client.ui.FontManager;
 import net.runelite.client.ui.PluginPanel;
 import net.runelite.client.util.LinkBrowser;
-import okhttp3.Call;
 
 class WikiChatPanel extends PluginPanel
 {
@@ -69,7 +68,7 @@ class WikiChatPanel extends PluginPanel
 	private final JTextArea providerInfo = new JTextArea();
 	private final JLabel getKeyLink = new JLabel();
 
-	private Call inflight;
+	private WikiChatClient.Handle inflight;
 	private JTextArea streamingTarget;
 	private JPanel streamingBubble;
 
@@ -188,7 +187,7 @@ class WikiChatPanel extends PluginPanel
 		else
 		{
 			appendAssistant(
-				"Ask me anything about Old School RuneScape. I'll answer using the OSRS wiki and cite my sources.",
+				"Ask me anything about Old School RuneScape. Answers are AI-generated from OSRS Wiki content (CC BY-NC-SA 3.0). I cite my sources — please verify before relying on them.",
 				null);
 		}
 	}
@@ -342,15 +341,20 @@ class WikiChatPanel extends PluginPanel
 
 	private JPanel makeSourcesPanel(List<Source> sources)
 	{
-		JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-		panel.setOpaque(false);
-		panel.setBorder(new EmptyBorder(4, 0, 0, 0));
-		panel.setAlignmentX(Component.LEFT_ALIGNMENT);
+		JPanel wrapper = new JPanel();
+		wrapper.setLayout(new BoxLayout(wrapper, BoxLayout.Y_AXIS));
+		wrapper.setOpaque(false);
+		wrapper.setBorder(new EmptyBorder(4, 0, 0, 0));
+		wrapper.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+		JPanel chips = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+		chips.setOpaque(false);
+		chips.setAlignmentX(Component.LEFT_ALIGNMENT);
 
 		JLabel header = new JLabel("Sources:");
 		header.setFont(FontManager.getRunescapeSmallFont());
 		header.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
-		panel.add(header);
+		chips.add(header);
 
 		java.util.Set<String> seen = new java.util.HashSet<>();
 		for (Source src : sources)
@@ -359,9 +363,22 @@ class WikiChatPanel extends PluginPanel
 			{
 				continue;
 			}
-			panel.add(makeSourceLink(src));
+			chips.add(makeSourceLink(src));
+			if (src.getHistoryUrl() != null && !src.getHistoryUrl().isEmpty())
+			{
+				chips.add(makeHistoryLink(src));
+			}
 		}
-		return panel;
+
+		JLabel license = new JLabel("Output: CC BY-NC-SA 3.0 · OSRS Wiki contributors");
+		license.setFont(FontManager.getRunescapeSmallFont());
+		license.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		license.setAlignmentX(Component.LEFT_ALIGNMENT);
+		license.setBorder(new EmptyBorder(2, 0, 0, 0));
+
+		wrapper.add(chips);
+		wrapper.add(license);
+		return wrapper;
 	}
 
 	private JLabel makeSourceLink(Source src)
@@ -379,6 +396,27 @@ class WikiChatPanel extends PluginPanel
 				if (src.getUrl() != null && !src.getUrl().isEmpty())
 				{
 					LinkBrowser.browse(src.getUrl());
+				}
+			}
+		});
+		return link;
+	}
+
+	private JLabel makeHistoryLink(Source src)
+	{
+		JLabel link = new JLabel("(hist)");
+		link.setFont(FontManager.getRunescapeSmallFont());
+		link.setForeground(ColorScheme.LIGHT_GRAY_COLOR);
+		link.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+		link.setToolTipText("View contributors for " + src.getTitle());
+		link.addMouseListener(new MouseAdapter()
+		{
+			@Override
+			public void mouseClicked(MouseEvent e)
+			{
+				if (src.getHistoryUrl() != null && !src.getHistoryUrl().isEmpty())
+				{
+					LinkBrowser.browse(src.getHistoryUrl());
 				}
 			}
 		});

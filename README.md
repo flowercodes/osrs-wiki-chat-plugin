@@ -73,6 +73,20 @@ Requires Java 11+ (Java 17 recommended on modern macOS).
 
 Launches a RuneLite developer client with the plugin loaded.
 
+## Wiki content and attribution
+
+This plugin retrieves and cites content from the [Old School RuneScape Wiki](https://oldschool.runescape.wiki) at query time. **The wiki is not affiliated with this plugin.**
+
+- All wiki content is © its individual contributors and licensed under [Creative Commons BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/).
+- For any cited page, the full list of contributors is visible via the page's **History** tab (the wiki link the plugin shows is the article page; click "View history" once there).
+- Per the wiki's [Generative AI policy](https://meta.runescape.wiki/w/Meta:Generative_AI_policy), AI-generated outputs that incorporate wiki content **may not be used for commercial purposes** and **inherit the CC BY-NC-SA 3.0 license** under the Share-Alike clause.
+- This plugin does not train or fine-tune any model on wiki content. Wiki content is fetched at query time and passed as transient context to your chosen LLM provider.
+
+### Non-commercial declaration
+
+This plugin and its hosted backend are provided free of charge, with no advertising, no paid tier, and no monetization. Users supply their own API keys directly to the LLM provider of their choice. Forking or redistributing this plugin in any commercial product would violate the wiki content license.
+
 ## License
 
-[BSD 2-Clause](LICENSE)
+Plugin code: [BSD 2-Clause](LICENSE)
+Wiki content (retrieved at runtime): [CC BY-NC-SA 3.0](https://creativecommons.org/licenses/by-nc-sa/3.0/)

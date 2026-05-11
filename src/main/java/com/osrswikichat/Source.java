@@ -7,4 +7,5 @@ public class Source
 {
 	String title;
 	String url;
+	String historyUrl;
 }

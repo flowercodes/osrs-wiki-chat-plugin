@@ -1,13 +1,10 @@
 package com.osrswikichat;
 
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.reflect.TypeToken;
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.lang.reflect.Type;
-import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import javax.inject.Inject;
@@ -28,18 +25,19 @@ import okhttp3.ResponseBody;
 public class WikiChatClient
 {
 	private static final MediaType JSON = MediaType.get("application/json; charset=utf-8");
-	private static final Type SOURCES_TYPE = new TypeToken<List<Source>>(){}.getType();
 
 	private final OkHttpClient http;
 	private final Gson gson;
 	private final WikiChatConfig config;
+	private final LLMRegistry llmRegistry;
 
 	@Inject
-	WikiChatClient(OkHttpClient http, Gson gson, WikiChatConfig config)
+	WikiChatClient(OkHttpClient http, Gson gson, WikiChatConfig config, LLMRegistry llmRegistry)
 	{
 		this.http = http;
 		this.gson = gson;
 		this.config = config;
+		this.llmRegistry = llmRegistry;
 	}
 
 	public interface Listener
@@ -51,37 +49,62 @@ public class WikiChatClient
 		void onError(String message);
 	}
 
-	public Call ask(String question, Listener listener)
+	public static final class Handle
 	{
+		private volatile Call activeCall;
+
+		void setActive(Call call)
+		{
+			this.activeCall = call;
+		}
+
+		public void cancel()
+		{
+			Call c = activeCall;
+			if (c != null && !c.isCanceled())
+			{
+				c.cancel();
+			}
+		}
+
+		public boolean isCanceled()
+		{
+			Call c = activeCall;
+			return c != null && c.isCanceled();
+		}
+	}
+
+	public Handle ask(String question, Listener listener)
+	{
+		Handle handle = new Handle();
+
+		Provider provider = config.provider();
+		String apiKey = config.userApiKey();
+		if (apiKey == null || apiKey.trim().isEmpty())
+		{
+			listener.onError("No API key set. Click the ⚙ button to set one up.");
+			return handle;
+		}
+
 		HttpUrl base = HttpUrl.parse(config.backendUrl());
 		if (base == null)
 		{
 			listener.onError("Invalid backend URL: " + config.backendUrl());
-			return null;
+			return handle;
 		}
 
 		JsonObject body = new JsonObject();
 		body.addProperty("question", question);
 
-		Provider provider = config.provider();
-		if (provider != null && provider.wireName() != null)
-		{
-			body.addProperty("provider", provider.wireName());
-		}
-
-		String key = config.userApiKey();
-		if (key != null && !key.trim().isEmpty())
-		{
-			body.addProperty("userApiKey", key.trim());
-		}
-
-		Request request = new Request.Builder()
-			.url(base.newBuilder().addPathSegment("ask").build())
+		Request contextRequest = new Request.Builder()
+			.url(base.newBuilder().addPathSegment("context").build())
 			.post(RequestBody.create(JSON, gson.toJson(body)))
 			.build();
 
-		Call call = http.newCall(request);
-		call.enqueue(new Callback()
+		Call contextCall = http.newCall(contextRequest);
+		handle.setActive(contextCall);
+
+		contextCall.enqueue(new Callback()
 		{
 			@Override
 			public void onFailure(Call c, IOException e)
@@ -90,8 +113,7 @@ public class WikiChatClient
 				{
 					return;
 				}
-				log.debug("ask failed", e);
-				listener.onError("Request failed: " + e.getMessage());
+				listener.onError("Couldn't reach the Wiki Chat backend: " + e.getMessage());
 			}
 
 			@Override
@@ -101,7 +123,7 @@ public class WikiChatClient
 				{
 					if (!r.isSuccessful())
 					{
-						String msg = "HTTP " + r.code();
+						String msg = "Backend HTTP " + r.code();
 						ResponseBody errBody = r.body();
 						if (errBody != null)
 						{
@@ -116,58 +138,109 @@ public class WikiChatClient
 						return;
 					}
 
-					List<Source> sources = parseSources(r.header("x-sources"));
 					ResponseBody respBody = r.body();
 					if (respBody == null)
 					{
-						listener.onError("Empty response body");
+						listener.onError("Empty backend response");
 						return;
 					}
 
-					try (BufferedReader reader = new BufferedReader(
-						new InputStreamReader(respBody.byteStream(), StandardCharsets.UTF_8)))
+					JsonObject parsed = gson.fromJson(respBody.string(), JsonObject.class);
+					if (parsed == null)
 					{
-						char[] buf = new char[512];
-						int n;
-						while ((n = reader.read(buf)) != -1)
+						listener.onError("Backend returned no JSON");
+						return;
+					}
+
+					List<Source> sources = new ArrayList<>();
+					List<String> chunkTexts = new ArrayList<>();
+					JsonArray chunks = parsed.getAsJsonArray("chunks");
+					if (chunks != null)
+					{
+						for (int i = 0; i < chunks.size(); i++)
 						{
-							if (c.isCanceled())
+							JsonObject ch = chunks.get(i).getAsJsonObject();
+							String title = ch.has("title") ? ch.get("title").getAsString() : "(unknown)";
+							String url = ch.has("url") ? ch.get("url").getAsString() : "";
+							String historyUrl = ch.has("historyUrl")
+								? ch.get("historyUrl").getAsString() : "";
+							String text = ch.has("text") ? ch.get("text").getAsString() : "";
+							if (text.isEmpty())
 							{
-								return;
+								continue;
 							}
-							listener.onChunk(new String(buf, 0, n));
+							sources.add(new Source(title, url, historyUrl));
+							chunkTexts.add(text);
 						}
 					}
-					listener.onDone(sources);
+
+					if (sources.isEmpty())
+					{
+						listener.onError("No wiki context found for that question.");
+						return;
+					}
+
+					if (handle.isCanceled())
+					{
+						return;
+					}
+
+					List<Source> deduped = uniqueByTitle(sources);
+					String userPrompt = PromptBuilder.userPrompt(question, sources, chunkTexts);
+					String systemPrompt = PromptBuilder.systemPrompt();
+
+					LLMClient llm = llmRegistry.get(provider);
+					Call llmCall = llm.chat(systemPrompt, userPrompt, apiKey.trim(),
+						new LLMClient.Listener()
+						{
+							@Override
+							public void onChunk(String text)
+							{
+								listener.onChunk(text);
+							}
+
+							@Override
+							public void onDone()
+							{
+								listener.onDone(deduped);
+							}
+
+							@Override
+							public void onError(String message)
+							{
+								listener.onError(message);
+							}
+						});
+					handle.setActive(llmCall);
 				}
-				catch (IOException e)
+				catch (Exception e)
 				{
 					if (!c.isCanceled())
 					{
-						listener.onError("Read failed: " + e.getMessage());
+						listener.onError("Backend parse error: " + e.getMessage());
 					}
 				}
 			}
 		});
 
-		return call;
+		return handle;
 	}
 
-	private List<Source> parseSources(String header)
+	private static List<Source> uniqueByTitle(List<Source> sources)
 	{
-		if (header == null || header.isEmpty())
+		List<Source> out = new ArrayList<>();
+		java.util.Set<String> seen = new java.util.HashSet<>();
+		for (Source s : sources)
 		{
-			return Collections.emptyList();
+			if (s == null || s.getTitle() == null)
+			{
+				continue;
+			}
+			if (seen.add(s.getTitle()))
+			{
+				out.add(s);
+			}
 		}
-		try
-		{
-			List<Source> parsed = gson.fromJson(header, SOURCES_TYPE);
-			return parsed != null ? parsed : Collections.emptyList();
-		}
-		catch (Exception e)
-		{
-			log.debug("failed to parse x-sources header", e);
-			return Collections.emptyList();
-		}
+		return Collections.unmodifiableList(out);
 	}
 }
