@@ -71,6 +71,7 @@ class WikiChatPanel extends PluginPanel
 	private WikiChatClient.Handle inflight;
 	private JTextArea streamingTarget;
 	private JPanel streamingBubble;
+	private final StringBuilder streamingText = new StringBuilder();
 
 	@Inject
 	WikiChatPanel(WikiChatClient client, ConfigManager configManager, WikiChatConfig config)
@@ -222,6 +223,7 @@ class WikiChatPanel extends PluginPanel
 		input.setText("");
 		appendUser(question);
 
+		streamingText.setLength(0);
 		streamingBubble = makeBubble(false);
 		streamingTarget = (JTextArea) streamingBubble.getClientProperty("text");
 		messageList.add(streamingBubble);
@@ -239,6 +241,7 @@ class WikiChatPanel extends PluginPanel
 					if (streamingTarget != null)
 					{
 						streamingTarget.append(text);
+						streamingText.append(text);
 						revalidateAndScroll();
 					}
 				});
@@ -249,9 +252,10 @@ class WikiChatPanel extends PluginPanel
 			{
 				SwingUtilities.invokeLater(() ->
 				{
-					if (streamingBubble != null && sources != null && !sources.isEmpty())
+					List<Source> cited = filterToCited(sources, streamingText.toString());
+					if (streamingBubble != null && !cited.isEmpty())
 					{
-						streamingBubble.add(makeSourcesPanel(sources), BorderLayout.SOUTH);
+						streamingBubble.add(makeSourcesPanel(cited), BorderLayout.SOUTH);
 					}
 					streamingBubble = null;
 					streamingTarget = null;
@@ -497,6 +501,46 @@ class WikiChatPanel extends PluginPanel
 			revalidate();
 			repaint();
 		}
+	}
+
+	private static List<Source> filterToCited(List<Source> sources, String responseText)
+	{
+		if (sources == null || sources.isEmpty() || responseText == null || responseText.isEmpty())
+		{
+			return java.util.Collections.emptyList();
+		}
+
+		java.util.Set<String> cited = new java.util.HashSet<>();
+		java.util.regex.Matcher m = java.util.regex.Pattern
+			.compile("\\[([^\\]\\n]{1,100})\\]")
+			.matcher(responseText);
+		while (m.find())
+		{
+			cited.add(m.group(1).trim().toLowerCase());
+		}
+
+		List<Source> out = new java.util.ArrayList<>();
+		for (Source s : sources)
+		{
+			if (s == null || s.getTitle() == null)
+			{
+				continue;
+			}
+			String title = s.getTitle().trim().toLowerCase();
+			for (String c : cited)
+			{
+				if (c.isEmpty() || c.matches("\\d+"))
+				{
+					continue;
+				}
+				if (c.equals(title) || c.contains(title) || title.contains(c))
+				{
+					out.add(s);
+					break;
+				}
+			}
+		}
+		return out;
 	}
 
 	void cancelInflight()
